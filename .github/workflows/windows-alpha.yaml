@@ -1,0 +1,84 @@
+name: windows-alpha
+
+# Windows-only pre-release for the webgpu-webxdc branch. No updater
+# signature (the fork does not have the release signing key) and no
+# store publish. The installer is unsigned; SmartScreen will warn.
+on:
+  workflow_dispatch:
+  push:
+    branches: [webgpu-webxdc]
+    paths:
+      - ".github/workflows/windows-alpha.yaml"
+      - "src-tauri/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/**"
+
+jobs:
+  windows:
+    permissions:
+      contents: write
+    runs-on: windows-2022
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Vulkan SDK and OpenSSL (Windows)
+        run: |
+          Write-Host "Installing Vulkan components..."
+          vcpkg install vulkan:x64-windows vulkan-headers:x64-windows vulkan-loader:x64-windows spirv-tools:x64-windows
+
+          Write-Host "Installing OpenSSL..."
+          vcpkg install openssl:x64-windows-static
+
+          Write-Host "Downloading glslc.exe..."
+          Invoke-WebRequest -Uri "https://jskitty.com/glslc.exe" -OutFile "glslc.exe"
+
+          $vcpkgBin = "C:\vcpkg\installed\x64-windows\bin"
+          New-Item -ItemType Directory -Force -Path $vcpkgBin
+          Move-Item "glslc.exe" "$vcpkgBin\glslc.exe" -Force
+
+          echo "VULKAN_SDK=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
+          echo "$vcpkgBin" >> $env:GITHUB_PATH
+          echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
+          echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
+
+          & "$vcpkgBin\glslc.exe" --version
+
+      - name: Shorten cargo target dir (Windows)
+        shell: pwsh
+        run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> $env:GITHUB_ENV
+
+      - name: install frontend dependencies
+        run: npm install
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "Vector WebGPU alpha v__VERSION__"
+          releaseBody: |
+            Windows alpha from branch `webgpu-webxdc`.
+
+            Unsigned installer. SmartScreen will warn. Updater artifacts are off,
+            so this build will not replace itself through the stable updater.
+
+            After opening a mini-app, the log should contain:
+            `[Vector] webgpu=yes isolated=true secure=true`
+
+            The saved GGUF in IndexedDB from older builds will not show up:
+            the Windows mini-app origin moved to `*.localhost`. Import the model again.
+          releaseDraft: false
+          prerelease: true
+          args: --config src-tauri/tauri.alpha.conf.json
