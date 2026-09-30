@@ -68,6 +68,11 @@ const INIT_SCRIPT: &str = r#"
 // Mini App initialization script
 // This runs in all frames to ensure security
 
+// So a webxdc log can show whether this window actually has a GPU.
+try {
+    console.info('[Vector] webgpu=' + (navigator.gpu ? 'yes' : 'no') + ' isolated=' + self.crossOriginIsolated + ' secure=' + self.isSecureContext);
+} catch (e) {}
+
 // ============================================================================
 // WebGL ANGLE performance shims (Windows)
 //
@@ -611,19 +616,44 @@ async fn miniapp_storage_partition(file_hash: &str) -> String {
     }
 }
 
+/// Turn WebGPU on for this mini-app when the system's WebKitGTK has the
+/// preference. Distro builds that predate it have no such property.
+#[cfg(target_os = "linux")]
+fn enable_miniapp_webgpu(window: &tauri::WebviewWindow) {
+    use gtk::prelude::*;
+
+    let Ok(gtk_window) = window.gtk_window() else {
+        return;
+    };
+
+    fn walk(widget: &gtk::Widget) {
+        if widget.type_().name() == "WebKitWebView" && widget.find_property("settings").is_some() {
+            let settings = widget.property::<gtk::glib::Object>("settings");
+            if settings.find_property("enable-webgpu").is_some() {
+                settings.set_property("enable-webgpu", true);
+            }
+        }
+        if let Some(container) = widget.downcast_ref::<gtk::Container>() {
+            container.foreach(|child| walk(child));
+        }
+    }
+
+    walk(gtk_window.upcast_ref());
+}
+
 /// Get the base URL for Mini Apps based on platform
 #[allow(dead_code)] // Used on desktop only
 fn get_miniapp_base_url(partition: &str) -> Result<tauri::Url, Error> {
     // URI format:
     // mac/linux:  webxdc://<partition>.host/<path>
-    // windows:    http://webxdc.<partition>.host/<path> — wry's WebView2
-    //             workaround intercepts by PREFIX (`http://webxdc.*`) and
-    //             strips it back to `webxdc://<partition>.host/`, so
-    //             per-partition hosts ride the existing filter untouched
+    // windows:    http://webxdc.<partition>.localhost/<path>
+    //             wry intercepts the `http://webxdc.` prefix and reverts it to
+    //             webxdc://<partition>.localhost/. `*.localhost` is a secure
+    //             context, which WebView2 requires before it exposes navigator.gpu.
     // android:    unused (mini-apps run in the native overlay WebView)
     #[cfg(target_os = "windows")]
     {
-        format!("http://webxdc.{}.host/", partition)
+        format!("http://webxdc.{}.localhost/", partition)
             .parse()
             .map_err(|e: url::ParseError| Error::Anyhow(e.into()))
     }
@@ -1143,6 +1173,11 @@ pub async fn miniapp_open(
         }
     
         let window = Arc::new(window_builder.build()?);
+        // WebGPU is off in WebKitGTK unless this WebKit build has the
+        // preference. The bindings we compile against don't expose it, so set
+        // the GObject property when it exists. No-op on older WebKit.
+        #[cfg(target_os = "linux")]
+        enable_miniapp_webgpu(window.as_ref());
     
         // Set up window close handler
         let window_label_for_handler = window_label.clone();

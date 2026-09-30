@@ -136,7 +136,6 @@ const PERMISSIONS_POLICY_DENY_ALL: &str = concat!(
     "ch-ua-platform-version=(), ",
     "ch-ua-wow64=(), ",
     "compute-pressure=(), ",
-    "cross-origin-isolated=(), ",
     "direct-sockets=(), ",
     "display-capture=(), ",
     "encrypted-media=(), ",
@@ -171,6 +170,11 @@ const PERMISSIONS_POLICY_DENY_ALL: &str = concat!(
     "clipboard-write=(), ",
     "deferred-fetch=(), ",
     "gamepad=(self), ",
+    // Same-origin only. An empty allowlist hides navigator.gpu, so wllama
+    // stays on CPU. Dedicated workers of this origin count as self.
+    // cross-origin-isolated is left at its default (self): an explicit ()
+    // opts the document out of the COOP/COEP isolation on these responses.
+    "webgpu=(self), ",
     "language-detector=(), ",
     "language-model=(), ",
     "manual-text=(), ",
@@ -275,8 +279,13 @@ pub fn miniapp_protocol<R: tauri::Runtime>(
 
     // URI format (host = per-app storage partition):
     // macOS/Linux: webxdc://<partition>.host/<path>
-    // Windows: arrives as http://webxdc.<partition>.host/<path>, reverted by
-    //          wry's prefix workaround to webxdc://<partition>.host/<path>
+    //   Linux: wry registers the scheme as a secure context.
+    //   macOS: WKWebView does not, until lib.rs marks the scheme secure.
+    // Windows: http://webxdc.<partition>.localhost/<path>. wry intercepts the
+    //          `http://webxdc.` prefix and reverts it to
+    //          webxdc://<partition>.localhost/. The `.localhost` suffix is
+    //          what makes WebView2 treat the origin as trustworthy, which
+    //          navigator.gpu requires.
 
     let webview_label = ctx.webview_label().to_owned();
 
@@ -645,13 +654,13 @@ fn make_success_response(body: Vec<u8>, content_type: &str, granted_permissions:
         .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         // Dynamic permissions policy based on user grants
         .header("Permissions-Policy", permissions_policy)
-        // Cross-origin isolation: enables SharedArrayBuffer and high-resolution timers.
-        // WASM-threaded games (Unity, Godot, etc.) need SharedArrayBuffer for multi-threaded
-        // rendering; without these headers on Chromium/WebView2 they fall back to single-
-        // threaded mode and run extremely slowly.  WKWebView (macOS) and WebKitGTK (Linux)
-        // provide SharedArrayBuffer without these headers, so this mainly fixes Windows.
+        // COOP+COEP make the document cross-origin isolated so threaded WASM
+        // can use SharedArrayBuffer. CORP lets those same-origin wasm/worker
+        // loads satisfy require-corp. WebGPU does not need isolation, but
+        // wllama's CPU path does.
         .header("Cross-Origin-Opener-Policy", "same-origin")
         .header("Cross-Origin-Embedder-Policy", "require-corp")
+        .header("Cross-Origin-Resource-Policy", "same-origin")
         .body(Cow::Owned(body))
         .unwrap_or_else(|_| make_error_response(http::StatusCode::INTERNAL_SERVER_ERROR, "Failed to build response", ""))
 }
@@ -670,9 +679,9 @@ fn make_error_response(status: http::StatusCode, message: &str, granted_permissi
         .header(http::header::CONTENT_SECURITY_POLICY, &*CSP)
         .header(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff")
         .header("Permissions-Policy", permissions_policy)
-        // Cross-origin isolation headers for SharedArrayBuffer (WASM threads)
         .header("Cross-Origin-Opener-Policy", "same-origin")
         .header("Cross-Origin-Embedder-Policy", "require-corp")
+        .header("Cross-Origin-Resource-Policy", "same-origin")
         .body(Cow::Owned(message.as_bytes().to_vec()))
         .unwrap()
 }

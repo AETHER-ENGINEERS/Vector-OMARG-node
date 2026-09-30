@@ -32,7 +32,7 @@ fn csp_header(host: &str) -> String {
 /// Permissions Policy for Mini Apps (Android document responses).
 /// Autoplay is allowed (self) for video streaming in Mini Apps.
 /// Must be on the document response to take effect (not subresource responses).
-const PERMISSIONS_POLICY_HEADER: &str = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), battery=(), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), speaker-selection=(), usb=(), web-share=(), xr-spatial-tracking=()";
+const PERMISSIONS_POLICY_HEADER: &str = "accelerometer=(), ambient-light-sensor=(), autoplay=(self), battery=(), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), speaker-selection=(), usb=(), web-share=(), webgpu=(self), xr-spatial-tracking=()";
 
 // ============================================================================
 // MiniAppManager Callbacks
@@ -1112,6 +1112,29 @@ fn create_web_resource_response(
             ],
         )
         .map_err(|e| format!("Failed to put Cache-Control header: {:?}", e))?;
+    }
+
+    // Same isolation headers as desktop. Threaded WASM needs them; WebGPU
+    // needs the secure origin plus webgpu=(self) in the policy above.
+    for (name, value) in [
+        ("Cross-Origin-Opener-Policy", "same-origin"),
+        ("Cross-Origin-Embedder-Policy", "require-corp"),
+        ("Cross-Origin-Resource-Policy", "same-origin"),
+    ] {
+        let key = env.new_string(name).map_err(|e| format!("{:?}", e))?;
+        let val = env.new_string(value).map_err(|e| format!("{:?}", e))?;
+        unsafe {
+            env.call_method_unchecked(
+                &headers,
+                put_method,
+                jni::signature::ReturnType::Object,
+                &[
+                    jni::sys::jvalue { l: key.into_raw() },
+                    jni::sys::jvalue { l: val.into_raw() },
+                ],
+            )
+            .map_err(|e| format!("Failed to put {name} header: {:?}", e))?;
+        }
     }
 
     // Create ByteArrayInputStream

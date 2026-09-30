@@ -52,7 +52,13 @@ class MiniAppWebViewClient(
          * Permissions Policy that denies all sensitive APIs by default.
          * Mini Apps must request permissions through the Vector permission system.
          */
-        private const val PERMISSIONS_POLICY = """accelerometer=(), ambient-light-sensor=(), autoplay=(self), battery=(), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), speaker-selection=(), usb=(), web-share=(), xr-spatial-tracking=()"""
+        private const val PERMISSIONS_POLICY = """accelerometer=(), ambient-light-sensor=(), autoplay=(self), battery=(), bluetooth=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), screen-wake-lock=(), speaker-selection=(), usb=(), web-share=(), webgpu=(self), xr-spatial-tracking=()"""
+
+        private val ISOLATION_HEADERS = mapOf(
+            "Cross-Origin-Opener-Policy" to "same-origin",
+            "Cross-Origin-Embedder-Policy" to "require-corp",
+            "Cross-Origin-Resource-Policy" to "same-origin"
+        )
 
         init {
             System.loadLibrary("vector_lib")
@@ -204,7 +210,7 @@ class MiniAppWebViewClient(
                 "Permissions-Policy" to PERMISSIONS_POLICY,
                 "X-Content-Type-Options" to "nosniff",
                 "Cache-Control" to "no-cache"
-            ),
+            ) + ISOLATION_HEADERS,
             ByteArrayInputStream(js.toByteArray(Charsets.UTF_8))
         )
     }
@@ -222,7 +228,7 @@ class MiniAppWebViewClient(
                 "Content-Security-Policy" to csp,
                 "Permissions-Policy" to PERMISSIONS_POLICY,
                 "X-Content-Type-Options" to "nosniff"
-            ),
+            ) + ISOLATION_HEADERS,
             ByteArrayInputStream("Access denied".toByteArray())
         )
     }
@@ -240,7 +246,7 @@ class MiniAppWebViewClient(
                 "Content-Security-Policy" to csp,
                 "Permissions-Policy" to PERMISSIONS_POLICY,
                 "X-Content-Type-Options" to "nosniff"
-            ),
+            ) + ISOLATION_HEADERS,
             ByteArrayInputStream("File not found".toByteArray())
         )
     }
@@ -258,7 +264,7 @@ class MiniAppWebViewClient(
                 "Content-Security-Policy" to csp,
                 "Permissions-Policy" to PERMISSIONS_POLICY,
                 "X-Content-Type-Options" to "nosniff"
-            ),
+            ) + ISOLATION_HEADERS,
             ByteArrayInputStream("Internal error".toByteArray())
         )
     }

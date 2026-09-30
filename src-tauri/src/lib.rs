@@ -111,6 +111,32 @@ mod services;
 // Re-export notification types for backwards compatibility
 pub(crate) use services::{NotificationData, show_notification_generic};
 
+/// Make `webxdc://` a secure context so mini-apps get `navigator.gpu`.
+/// Private WebKit SPI. No-op when this WebKit lacks the selector.
+#[cfg(target_os = "macos")]
+#[link(name = "WebKit", kind = "framework")]
+extern "C" {}
+
+#[cfg(target_os = "macos")]
+fn register_webxdc_scheme_as_secure() {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, Bool, Sel};
+    use objc2_foundation::NSString;
+
+    let Some(cls) = AnyClass::get(c"WKWebView") else {
+        return;
+    };
+    let selector = Sel::register(c"_registerURLSchemeAsSecure:");
+    let responds: Bool = unsafe { msg_send![cls, respondsToSelector: selector] };
+    if !responds.as_bool() {
+        return;
+    }
+    let scheme = NSString::from_str("webxdc");
+    unsafe {
+        let _: () = msg_send![cls, _registerURLSchemeAsSecure: &*scheme];
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Before the first socket or pool exists: GUI apps start with a 256 ceiling.
@@ -273,10 +299,20 @@ pub fn run() {
     {
         // WebView2's GPU blocklist can cause software rendering fallback, resulting in
         // extremely poor WebGL performance (e.g. WebXDC games at ~5fps on gaming hardware).
+        // `--ignore-gpu-blocklist` does not lift the separate WebGPU adapter blocklist.
+        // Without `--enable-unsafe-webgpu`, navigator.gpu stays missing and a mini-app
+        // that loads a GGUF through wllama falls straight through to single-thread WASM.
         // This env var is applied globally before any WebView2 is created, avoiding the
         // freeze issues that occur with per-window additional_browser_args.
-        std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--ignore-gpu-blocklist");
+        std::env::set_var(
+            "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+            "--ignore-gpu-blocklist --enable-unsafe-webgpu --enable-features=WebGPU",
+        );
     }
+
+    // Before any WKWebView exists. WebGPU is [SecureContext].
+    #[cfg(target_os = "macos")]
+    register_webxdc_scheme_as_secure();
 
     #[allow(unused_mut)] // mut needed on desktop for plugin registration
     let mut builder = tauri::Builder::default()
