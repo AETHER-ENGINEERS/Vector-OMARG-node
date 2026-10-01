@@ -1,8 +1,9 @@
 name: windows-alpha
 
-# Windows-only pre-release for the webgpu-webxdc branch. No updater
-# signature (the fork does not have the release signing key) and no
-# store publish. The installer is unsigned; SmartScreen will warn.
+# Test builds of the webgpu-webxdc branch for every platform. No updater
+# signature (this fork has no release signing key) and no store publish.
+# Android is signed with a throwaway key generated in this workflow so the
+# APK can be sideloaded. Desktop installers are unsigned.
 on:
   workflow_dispatch:
   push:
@@ -16,10 +17,22 @@ on:
       - "scripts/**"
 
 jobs:
-  windows:
+  desktop:
     permissions:
       contents: write
-    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ubuntu-22.04
+            args: --config src-tauri/tauri.alpha.conf.json
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin --config src-tauri/tauri.alpha.conf.json
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin --config src-tauri/tauri.alpha.conf.json
+          - platform: windows-2022
+            args: --bundles nsis --config src-tauri/tauri.alpha.conf.json
+    runs-on: ${{ matrix.platform }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -31,31 +44,37 @@ jobs:
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: install dependencies (ubuntu only)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
 
       - name: Install Vulkan SDK and OpenSSL (Windows)
+        if: matrix.platform == 'windows-2022'
         run: |
-          Write-Host "Installing Vulkan components..."
           vcpkg install vulkan:x64-windows vulkan-headers:x64-windows vulkan-loader:x64-windows spirv-tools:x64-windows
-
-          Write-Host "Installing OpenSSL..."
           vcpkg install openssl:x64-windows-static
-
-          Write-Host "Downloading glslc.exe..."
           Invoke-WebRequest -Uri "https://jskitty.com/glslc.exe" -OutFile "glslc.exe"
-
           $vcpkgBin = "C:\vcpkg\installed\x64-windows\bin"
           New-Item -ItemType Directory -Force -Path $vcpkgBin
           Move-Item "glslc.exe" "$vcpkgBin\glslc.exe" -Force
-
           echo "VULKAN_SDK=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
           echo "CMAKE_PREFIX_PATH=C:\vcpkg\installed\x64-windows" >> $env:GITHUB_ENV
           echo "$vcpkgBin" >> $env:GITHUB_PATH
           echo "OPENSSL_DIR=C:\vcpkg\installed\x64-windows-static" >> $env:GITHUB_ENV
           echo "OPENSSL_STATIC=1" >> $env:GITHUB_ENV
-
           & "$vcpkgBin\glslc.exe" --version
 
       - name: Shorten cargo target dir (Windows)
+        if: matrix.platform == 'windows-2022'
         shell: pwsh
         run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> $env:GITHUB_ENV
 
@@ -67,18 +86,124 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: "Vector WebGPU alpha v__VERSION__"
+          releaseName: "Vector test build v__VERSION__"
           releaseBody: |
-            Windows alpha from branch `webgpu-webxdc`.
+            Test build from branch `webgpu-webxdc` for Windows, Linux, Mac, and Android.
+            Not an official Vector release. The in-app updater is off.
 
-            Unsigned installer. SmartScreen will warn. Updater artifacts are off,
-            so this build will not replace itself through the stable updater.
+            Desktop installers are unsigned. Windows SmartScreen and Mac Gatekeeper will warn.
+            The Android APK is signed with a throwaway test key, not Vector's store key.
+            If official 0.4.4 is already installed on a phone, uninstall it before this APK.
+            Android treats this preview as older than 0.4.4.
 
-            After opening a mini-app, the log should contain:
+            In a mini-app, the log should contain:
             `[Vector] webgpu=yes isolated=true secure=true`
-
-            The saved GGUF in IndexedDB from older builds will not show up:
-            the Windows mini-app origin moved to `*.localhost`. Import the model again.
           releaseDraft: false
           prerelease: true
-          args: --config src-tauri/tauri.alpha.conf.json
+          args: ${{ matrix.args }}
+
+  android:
+    permissions:
+      contents: write
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;29.0.14206865"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> $GITHUB_ENV
+          echo "$ANDROID_HOME/ndk/29.0.14206865/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libasound2-dev
+
+      - name: Build OpenSSL for Android (aarch64 + armv7)
+        run: |
+          OPENSSL_VERSION="3.5.0"
+          curl -LO https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz
+          export ANDROID_NDK_ROOT=$NDK_HOME
+          export PATH=$NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+          tar xzf openssl-${OPENSSL_VERSION}.tar.gz
+          cd openssl-${OPENSSL_VERSION}
+          ./Configure android-arm64 -D__ANDROID_API__=26 --prefix=/usr/local/openssl-android-arm64 no-shared no-tests no-ui-console
+          make -j$(nproc)
+          sudo make install_sw
+          cd ..
+          rm -rf openssl-${OPENSSL_VERSION}
+          tar xzf openssl-${OPENSSL_VERSION}.tar.gz
+          cd openssl-${OPENSSL_VERSION}
+          ./Configure android-arm -D__ANDROID_API__=26 --prefix=/usr/local/openssl-android-armv7 no-shared no-tests no-ui-console
+          make -j$(nproc)
+          sudo make install_sw
+        env:
+          NDK_HOME: ${{ env.NDK_HOME }}
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Throwaway signing key
+        run: |
+          keytool -genkeypair -v -keystore "$HOME/alpha.jks" -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias alpha -storepass alphatest -keypass alphatest \
+            -dname "CN=Vector Alpha, O=AETHER-ENGINEERS"
+          cat > src-tauri/gen/android/keystore.properties << EOF
+          storeFile=$HOME/alpha.jks
+          keyAlias=alpha
+          password=alphatest
+          EOF
+
+      - name: Build Android APK
+        run: npx tauri android build --apk true --target aarch64 --target armv7
+        env:
+          NDK_HOME: ${{ env.NDK_HOME }}
+          OPENSSL_STATIC: 1
+          OPENSSL_INCLUDE_DIR: /usr/local/openssl-android-arm64/include
+          AARCH64_LINUX_ANDROID_OPENSSL_LIB_DIR: /usr/local/openssl-android-arm64/lib
+          AARCH64_LINUX_ANDROID_OPENSSL_DIR: /usr/local/openssl-android-arm64
+          ARMV7_LINUX_ANDROIDEABI_OPENSSL_LIB_DIR: /usr/local/openssl-android-armv7/lib
+          ARMV7_LINUX_ANDROIDEABI_OPENSSL_DIR: /usr/local/openssl-android-armv7
+
+      - name: Collect split APKs
+        run: |
+          OUT=src-tauri/gen/android/app/build/outputs/apk/universal/release
+          mv "$OUT/app-universal-arm64-v8a-release.apk"   "$OUT/Vector-arm64-v8a.apk"
+          mv "$OUT/app-universal-armeabi-v7a-release.apk" "$OUT/Vector-armeabi-v7a.apk"
+          mv "$OUT/app-universal-universal-release.apk"   "$OUT/Vector.apk"
+          ls -lh "$OUT"/Vector*.apk
+
+      - name: Upload APKs to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/version = "\(.*\)"/\1/')"
+          if ! gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --json tagName --jq '.[].tagName' | grep -qx "$TAG"; then
+            gh release create "$TAG" --prerelease --title "Vector test build $TAG" --repo "$GITHUB_REPOSITORY" --notes "Test build from branch webgpu-webxdc. Android APKs are signed with a throwaway key."
+          fi
+          gh release upload "$TAG" \
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/Vector.apk \
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/Vector-arm64-v8a.apk \
+            src-tauri/gen/android/app/build/outputs/apk/universal/release/Vector-armeabi-v7a.apk \
+            --clobber --repo "$GITHUB_REPOSITORY"

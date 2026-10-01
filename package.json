@@ -1,7 +1,7 @@
 {
   "name": "vector",
   "private": true,
-  "version": "0.4.4-webgpu.1",
+  "version": "0.4.4-2",
   "type": "module",
   "scripts": {
     "tauri": "node scripts/tauri.mjs",
